@@ -24,10 +24,10 @@
 #define MAX_PROP_WORDS 100000
 
 typedef struct _MSG {
-  char* method;  
-  char* content;  
-  char* link;  
-  struct _MSG* next;  
+  char* method;
+  char* content;
+  char* link;
+  struct _MSG* next;
 } MSG;
 
 typedef struct _ImageSprite {
@@ -401,7 +401,7 @@ main() {
         case PropertyNotify:
           {
             unsigned char *prop = NULL;
-            int	result, actualFormat;
+            int result, actualFormat;
             unsigned long numItems, bytesAfter;
             Atom actualType;
 
