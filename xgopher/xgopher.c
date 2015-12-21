@@ -5,6 +5,7 @@
 #include <X11/xpm.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <assert.h>
 #include <unistd.h>
 #include <memory.h>
 #include <signal.h>
@@ -28,6 +29,185 @@ typedef struct _MSG {
   char* link;  
   struct _MSG* next;  
 } MSG;
+
+typedef struct _ImageSprite {
+  XImage *body;
+  XImage *mask;
+} ImageSprite;
+
+typedef struct _PixmapSprite {
+  Pixmap body;
+  Pixmap mask;
+  int width;
+  int height;
+} PixmapSprite;
+
+static ImageSprite *
+new_image_sprite(void)
+{
+  ImageSprite *ims = malloc(sizeof (ImageSprite));
+
+  if (!ims)
+    return NULL;
+
+  ims->body = NULL;
+  ims->mask = NULL;
+
+  return ims;
+}
+
+static PixmapSprite *
+new_pixmap_sprite(void)
+{
+  PixmapSprite *pms = malloc(sizeof (PixmapSprite));
+
+  if (!pms)
+    return NULL;
+
+  pms->body = None;
+  pms->mask = None;
+
+  return pms;
+}
+
+static int
+is_image_sprite_valid(const ImageSprite *ims)
+{
+  return ims && ims->body && ims->mask;
+}
+
+static int
+is_pixmap_sprite_valid(const PixmapSprite *pms)
+{
+  return pms && pms->body && pms->mask;
+}
+
+static ImageSprite *
+create_image_sprite_from_data(Display *dpy, char **data)
+{
+  ImageSprite *ims = new_image_sprite();
+
+  if (!ims)
+    return NULL;
+
+  if (XpmCreateImageFromData(dpy, data, &ims->body, &ims->mask, NULL)) {
+    free(ims);
+    return NULL;
+  }
+  assert(ims->body->width == ims->mask->width && ims->body->height == ims->mask->height);
+
+  return ims;
+}
+
+static void
+destroy_image_sprite(ImageSprite *ims)
+{
+  if (ims) {
+    if (ims->body)
+      XDestroyImage(ims->body);
+    if (ims->mask)
+      XDestroyImage(ims->mask);
+    free(ims);
+  }
+}
+
+static void
+destroy_pixmap_sprite(Display *dpy, PixmapSprite *pms)
+{
+  if (pms) {
+    if (pms->body)
+      XFreePixmap(dpy, pms->body);
+    if (pms->mask)
+      XFreePixmap(dpy, pms->mask);
+    free(pms);
+  }
+}
+
+static ImageSprite *
+create_horizontal_reverse_image_sprite(const ImageSprite *src)
+{
+  ImageSprite *dst;
+  int x, y, w, h;
+
+  if (!is_image_sprite_valid(src))
+    return NULL;
+
+  assert(src->body->width == src->mask->width && src->body->height == src->mask->height);
+
+  w = src->body->width;
+  h = src->body->height;
+
+  dst = new_image_sprite();
+  if (!dst)
+    return NULL;
+
+  /* XXX: unnecessary copy */
+  dst->body = XSubImage(src->body, 0, 0, w, h);
+  dst->mask = XSubImage(src->mask, 0, 0, w, h);
+  if (!is_image_sprite_valid(dst)) {
+    destroy_image_sprite(dst);
+    return NULL;
+  }
+
+  /* XXX: slow */
+  for (y=0; y<h; y++) {
+    for (x=0; x<w; x++) {
+      XPutPixel(dst->body, w-x-1, y, XGetPixel(src->body, x, y));
+      XPutPixel(dst->mask, w-x-1, y, XGetPixel(src->mask, x, y));
+    }
+  }
+
+  return dst;
+}
+
+static PixmapSprite *
+convert_image_sprite_to_pixmap_sprite(Display *dpy, const ImageSprite *src)
+{
+  PixmapSprite *dst;
+  int w, h;
+  GC gc;
+
+  if (!is_image_sprite_valid(src))
+    return NULL;
+
+  assert(src->body->width == src->mask->width && src->body->height == src->mask->height);
+
+  dst = new_pixmap_sprite();
+  if (!dst)
+    return NULL;
+
+  w = dst->width = src->body->width;
+  h = dst->height = src->body->height;
+
+  dst->body = XCreatePixmap(dpy, DefaultRootWindow(dpy), w, h, DefaultDepth(dpy, DefaultScreen(dpy)));
+  dst->mask = XCreatePixmap(dpy, DefaultRootWindow(dpy), w, h, 1);
+  if (!is_pixmap_sprite_valid(dst)) {
+    destroy_pixmap_sprite(dpy, dst);
+    return NULL;
+  }
+
+  gc = XCreateGC(dpy, dst->mask, 0, 0);
+
+  XPutImage(dpy, dst->body, DefaultGC(dpy, DefaultScreen(dpy)), src->body, 0, 0, 0, 0, w, h);
+  XPutImage(dpy, dst->mask, gc, src->mask, 0, 0, 0, 0, w, h);
+
+  XFreeGC(dpy, gc);
+
+  return dst;
+}
+
+static void
+put_pixmap_sprite_body_to_window(Display *dpy, Window win, const PixmapSprite *pms)
+{
+  XCopyArea(dpy, pms->body, win, DefaultGC(dpy, DefaultScreen(dpy)), 0, 0, pms->width, pms->height, 0, 0);
+}
+
+static void
+set_pixmap_sprite_mask_to_window(Display *dpy, Window win, const PixmapSprite *pms)
+{
+  XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, pms->mask, ShapeSet);
+
+}
 
 static void
 x11_set_property(Display *dpy, Window win, char *atom, int state) {
@@ -94,8 +274,7 @@ main() {
   Display *dpy;
   Drawable root;
   Window win;
-  Pixmap shape[10];
-  XImage *image[10];
+  PixmapSprite *pmss[10];
   int step = 0, waittime = 0;
   char **xpms[] = {
     out01, out02, out03, out02, waiting
@@ -135,27 +314,13 @@ main() {
   fs = XCreateFontSet(dpy, "-*-*-*-R-Normal--14-130-75-75-*-*", &miss, &n_miss, &def);
 
   for (i = 0; i < 5; i++) {
-    XGCValues values;
-    XImage *mask, *maskr;
-    int ix, iy;
-    XpmCreateImageFromData(dpy, xpms[i], &image[i], &mask, NULL);
-    shape[i] = XCreatePixmap(dpy, root, 200, 200, 1);
-    GC maskgc = XCreateGC(dpy, shape[i], 0, &values);
-    XPutImage(dpy, shape[i], maskgc, mask, 0, 0, 0, 0, 200, 200);
-
-    image[i+5] = XSubImage(image[i], 0, 0, 200, 200);
-    maskr = XSubImage(mask, 0, 0, 200, 200);
-    for (ix = 0; ix < 200; ix++) {
-      for (iy = 0; iy < 200; iy++) {
-        XPutPixel(image[i+5], 200 - ix, iy, XGetPixel(image[i], ix, iy));
-        XPutPixel(maskr, 200 - ix, iy, XGetPixel(mask, ix, iy));
-      }
-    }
-    shape[i+5] = XCreatePixmap(dpy, root, 200, 200, 1);
-    XPutImage(dpy, shape[i+5], maskgc, maskr, 0, 0, 0, 0, 200, 200);
-
-    XDestroyImage(mask);
-    XFreeGC(dpy, maskgc);
+    ImageSprite *ims, *rims;
+    ims = create_image_sprite_from_data(dpy, xpms[i]);
+    rims = create_horizontal_reverse_image_sprite(ims);
+    pmss[i] = convert_image_sprite_to_pixmap_sprite(dpy, ims);
+    pmss[i+5] = convert_image_sprite_to_pixmap_sprite(dpy, rims);
+    destroy_image_sprite(ims);
+    destroy_image_sprite(rims);
   }
 
   x11_set_property(dpy, win, "_NET_WM_STATE_STAYS_ON_TOP", 1);
@@ -220,7 +385,7 @@ main() {
       }
       if ((dx < 0 && x < 0) || (dx > 0 && x > width - 200)) dx = -dx;
       if (use_shape)
-        XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, pmss[(mode==2?4:(step%4))+(dx>0?0:5)]->mask, ShapeSet);
+        set_pixmap_sprite_mask_to_window(dpy, win, pmss[(mode==2?4:(step%4))+(dx>0?0:5)]);
       else
         XClearArea(dpy, win, 0, 0, 200, 200, True);
       x11_moveresize_window(dpy, win, x, y, 200, 200);
@@ -265,7 +430,7 @@ main() {
           break;
         case Expose:
           if(event.xexpose.count == 0) {
-            XPutImage(dpy, win, gc, image[(mode==2?4:(step%4))+(dx>0?0:5)], 0, 0, 0, 0, 200, 200);
+            put_pixmap_sprite_body_to_window(dpy, win, pmss[(mode==2?4:(step%4))+(dx>0?0:5)]);
             if (mode == 2 && msg->content) {
               XSetForeground(dpy, gc, BlackPixel(dpy, 0));
               Xutf8DrawString(dpy, win, fs, gc, 20, 150, msg->content, strlen(msg->content));
