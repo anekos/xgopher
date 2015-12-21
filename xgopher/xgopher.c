@@ -117,6 +117,7 @@ main() {
   char *def;
   int n_miss;
   MSG *msg = NULL;
+  Bool use_shape = True;
 
   setlocale(LC_CTYPE,"");
 
@@ -223,7 +224,10 @@ main() {
           break;
       }
       if ((dx < 0 && x < 0) || (dx > 0 && x > width - 200)) dx = -dx;
-      XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, shape[(mode==2?4:(step%4))+(dx>0?0:5)], ShapeSet);
+      if (use_shape)
+        XShapeCombineMask(dpy, win, ShapeBounding, 0, 0, pmss[(mode==2?4:(step%4))+(dx>0?0:5)]->mask, ShapeSet);
+      else
+        XClearArea(dpy, win, 0, 0, 200, 200, True);
       x11_moveresize_window(dpy, win, x, y, 200, 200);
     }
     while(XPending(dpy) > 0) {
