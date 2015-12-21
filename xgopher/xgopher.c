@@ -128,6 +128,7 @@ main() {
   height = DisplayHeight(dpy, screen);
   win = XCreateSimpleWindow(dpy, root,
       0, 0, 200, 200, 0, BlackPixel(dpy, 0), WhitePixel(dpy, 0));
+  XSetWindowBackgroundPixmap(dpy, win, None);
   gc = XCreateGC(dpy, win, 0, 0);
   //fs = XCreateFontSet(dpy, "*-iso10646-1", &miss, &n_miss, &def);
   fs = XCreateFontSet(dpy, "-*-*-*-R-Normal--14-130-75-75-*-*", &miss, &n_miss, &def);
