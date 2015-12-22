@@ -269,13 +269,23 @@ MSG* free_msg(MSG* top) {
   return next;
 }
 
+typedef enum {
+  S_START_WALK,
+  S_WALK,
+  S_START_JUMP,
+  S_JUMP,
+  S_START_PAUSE,
+  S_PAUSE
+} State;
+
 int
 main() {
   Display *dpy;
   Drawable root;
   Window win;
   PixmapSprite *pmss[10];
-  int step = 0, waittime = 0;
+  const PixmapSprite *curpms;
+  int step = 0;
   char **xpms[] = {
     out01, out02, out03, out02, waiting
   };
@@ -284,7 +294,8 @@ main() {
   XFontSet fs;
   XEvent event;
   Atom gopherNotify;
-  int i, t, mode = 0;
+  int i;
+  State state = S_START_WALK;
   int x, y;
   int dx = 10, dy = 0;
   char **miss;
@@ -292,6 +303,11 @@ main() {
   int n_miss;
   MSG *msg = NULL;
   Bool use_shape = True;
+  const struct timeval move_interval = { .tv_sec=0, .tv_usec=50000 };
+  const struct timeval pause_interval = { .tv_sec=5, .tv_usec=0 };
+  struct timeval now, eta, timeout;
+  int fd;
+  fd_set rfds;
 
   setlocale(LC_CTYPE,"");
 
@@ -341,56 +357,81 @@ main() {
 
   gopherNotify = XInternAtom(dpy, "GopherNotify", 0);
 
-  t = 0;
+  timerclear(&timeout);
+  fd = ConnectionNumber(dpy);
   while(1) {
-    if (t == 0) {
-      if (mode == 0 && msg && msg->method) {
-        if (strcmp(msg->method, "message") == 0) {
-          mode = 2;
-          waittime = 60;
-        } else if (strcmp(msg->method, "jump") == 0) {
-          mode = 1;
-          dy = -20;
+    /* (1) timeout process */
+    while (!timerisset(&timeout)) {
+      switch (state) {
+      case S_START_WALK:
+        state = S_WALK;
+        step = 0;
+        dy = 0;
+        y = height - 200;
+        break;
+      case S_WALK:
+        if (msg != NULL) {
+          if (strcmp(msg->method, "message") == 0) {
+            /* pending dequeueing msg while pausing */
+            state = S_START_PAUSE;
+            break;
+          } else if (strcmp(msg->method, "jump") == 0) {
+            msg = free_msg(msg);
+            state = S_START_JUMP;
+            break;
+          }
         }
+        if (rand() % 40 == 0) {
+          state = S_START_JUMP;
+          break;
+        }
+        step++;
+        x += dx;
+        y += dy;
+        curpms = pmss[(step%4)+(dx>0?0:5)];
+        timeout = move_interval;
+        break;
+      case S_START_JUMP:
+        dy = -20;
+        state = S_JUMP;
+        break;
+      case S_JUMP:
+        x += dx / 2;
+        y += dy;
+        dy += 2;
+        if (y > height - 200) {
+          state = S_START_WALK;
+          break;
+        }
+        curpms = pmss[(step%4)+(dx>0?0:5)];
+        timeout = move_interval;
+        break;
+      case S_START_PAUSE:
+        assert(msg != NULL && strcmp(msg->method, "message") == 0);
+        curpms = pmss[4+(dx>0?0:5)];
+        timeout = pause_interval;
+        state = S_PAUSE;
+        break;
+      case S_PAUSE:
+        assert(msg != NULL && strcmp(msg->method, "message") == 0);
+        msg = free_msg(msg);
+        state = S_START_WALK;
+        break;
       }
-      switch (mode) {
-        case 0:
-          step++;
-          x += dx;
-          y += dy;
-          if (rand() % 40 == 0) {
-            mode = 1;
-            dy = -20;
-          }
-          break;
-        case 1:
-          step = 0;
-          x += dx / 2;
-          y += dy;
-          dy += 2;
-          if (y > height - 200) {
-            y = height - 200;
-            dy = 0;
-            mode = 0;
-            msg = free_msg(msg);
-          }
-          break;
-        case 2:
-          waittime--;
-          if (waittime <= 0) {
-            mode = 0;
-            msg = free_msg(msg);
-          }
-          break;
-      }
-      if ((dx < 0 && x < 0) || (dx > 0 && x > width - 200)) dx = -dx;
-      if (use_shape)
-        set_pixmap_sprite_mask_to_window(dpy, win, pmss[(mode==2?4:(step%4))+(dx>0?0:5)]);
-      else
-        XClearArea(dpy, win, 0, 0, 200, 200, True);
-      x11_moveresize_window(dpy, win, x, y, 200, 200);
     }
-    while(XPending(dpy) > 0) {
+    if ((dx < 0 && x < 0) || (dx > 0 && x > width - 200)) dx = -dx;
+    if (use_shape)
+      set_pixmap_sprite_mask_to_window(dpy, win, curpms);
+    else
+      XClearArea(dpy, win, 0, 0, 200, 200, True);
+    x11_moveresize_window(dpy, win, x, y, 200, 200);
+
+    /* (2) prepare to wait */
+    gettimeofday(&now, NULL);
+    timeradd(&now, &timeout, &eta);
+
+    /* (3) event loop with waiting */
+    while (timerisset(&timeout) || XPending(dpy) > 0) {
       XNextEvent(dpy, &event);
       switch(event.type) {
         case PropertyNotify:
@@ -424,14 +465,16 @@ main() {
                   while (q->next) q = q->next;
                   q->next = newmsg;
                 } else msg = newmsg;
+                /* cancel timeout */
+                gettimeofday(&eta, NULL);
               }
             }
           }
           break;
         case Expose:
           if(event.xexpose.count == 0) {
-            put_pixmap_sprite_body_to_window(dpy, win, pmss[(mode==2?4:(step%4))+(dx>0?0:5)]);
-            if (mode == 2 && msg->content) {
+            put_pixmap_sprite_body_to_window(dpy, win, curpms);
+            if (state == S_PAUSE && msg->content) {
               XSetForeground(dpy, gc, BlackPixel(dpy, 0));
               Xutf8DrawString(dpy, win, fs, gc, 20, 150, msg->content, strlen(msg->content));
             }
@@ -440,10 +483,34 @@ main() {
         default:
           break;
       }
+      if (XPending(dpy) == 0) {
+        timerclear(&timeout);
+        gettimeofday(&now, NULL);
+        if (timercmp(&now, &eta, <)) {
+          timersub(&eta, &now, &timeout);
+          FD_ZERO(&rfds);
+          FD_SET(fd, &rfds);
+          i = select(fd+1, &rfds, NULL, NULL, &timeout);
+          switch (i) {
+          case -1:
+            /* error */
+            goto quit;
+          case 0:
+            /* timeout */
+            timerclear(&timeout);
+            break;
+          default:
+            /* incoming */
+            break;
+          }
+        }
+      }
     }
     if (t++ > 180000) t = 0;
   }
+quit:
   XCloseDisplay(dpy);
+  return 0;
 }
 
 // vim: set sw=2 cino=J2 et:
