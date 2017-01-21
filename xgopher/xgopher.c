@@ -441,7 +441,31 @@ main() {
     timeradd(&now, &timeout, &eta);
 
     /* (3) event loop with waiting */
-    while (timerisset(&timeout) || XPending(dpy) > 0) {
+    while (timerisset(&timeout)) {
+      if (XPending(dpy) == 0) {
+        timerclear(&timeout);
+        gettimeofday(&now, NULL);
+        if (timercmp(&now, &eta, <)) {
+          timersub(&eta, &now, &timeout);
+          FD_ZERO(&rfds);
+          FD_SET(fd, &rfds);
+          i = select(fd+1, &rfds, NULL, NULL, &timeout);
+          switch (i) {
+          case -1:
+            /* error */
+            goto quit;
+          case 0:
+            /* timeout */
+            timerclear(&timeout);
+            break;
+          default:
+            /* incoming */
+            break;
+          }
+        }
+        continue;
+      }
+
       XNextEvent(dpy, &event);
       switch(event.type) {
         case PropertyNotify:
@@ -492,28 +516,6 @@ main() {
           break;
         default:
           break;
-      }
-      if (XPending(dpy) == 0) {
-        timerclear(&timeout);
-        gettimeofday(&now, NULL);
-        if (timercmp(&now, &eta, <)) {
-          timersub(&eta, &now, &timeout);
-          FD_ZERO(&rfds);
-          FD_SET(fd, &rfds);
-          i = select(fd+1, &rfds, NULL, NULL, &timeout);
-          switch (i) {
-          case -1:
-            /* error */
-            goto quit;
-          case 0:
-            /* timeout */
-            timerclear(&timeout);
-            break;
-          default:
-            /* incoming */
-            break;
-          }
-        }
       }
     }
     if (t++ > 180000) t = 0;
