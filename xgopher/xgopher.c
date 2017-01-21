@@ -518,7 +518,6 @@ main() {
           break;
       }
     }
-    if (t++ > 180000) t = 0;
   }
 quit:
   XCloseDisplay(dpy);
