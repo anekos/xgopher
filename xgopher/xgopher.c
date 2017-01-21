@@ -259,6 +259,15 @@ x11_moveresize_window(Display *dpy, Window win, int x, int y, int width, int hei
   return XSendEvent(dpy, DefaultRootWindow(dpy), 0, SubstructureRedirectMask, &xevent);
 }
 
+static void
+x11_move_window(Display *dpy, Window win, int x, int y) {
+  XWindowChanges wc;
+  wc.x = x;
+  wc.y = y;
+
+  XConfigureWindow(dpy, win, CWX | CWY, &wc);
+}
+
 MSG* free_msg(MSG* top) {
   MSG* next;
   if (!top) return NULL;
@@ -425,7 +434,7 @@ main() {
       set_pixmap_sprite_mask_to_window(dpy, win, curpms);
     else
       XClearArea(dpy, win, 0, 0, 200, 200, True);
-    x11_moveresize_window(dpy, win, x, y, 200, 200);
+    x11_move_window(dpy, win, x, y);
 
     /* (2) prepare to wait */
     gettimeofday(&now, NULL);
