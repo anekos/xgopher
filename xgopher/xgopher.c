@@ -11,6 +11,7 @@
 #include <signal.h>
 #include <stdint.h>
 #include <time.h>
+#include <sys/time.h>
 #include <jansson.h>
 
 #include "out01.xpm"
