@@ -13,8 +13,20 @@
 
 Atom gopherNotify;
 
-static int
-enum_windows(Display *dpy, Window win) {
+static void notify_send(Display *dpy, Window win, char* method, char* content, char* link) {
+  char* p;
+  json_t *object = json_object();
+  json_object_set(object, "method", json_string(method));
+  json_object_set(object, "content", json_string(content));
+  json_object_set(object, "link", json_string(link));
+  p = json_dumps(object, 0);
+  XChangeProperty(dpy, win, gopherNotify, XA_STRING, 8,
+      PropModeAppend, (unsigned char*) p, (int) strlen(p));
+  json_decref(object);
+}
+
+static void
+enum_windows(Display *dpy, Window win, char* method, char* content, char* link) {
   Window parent, *children;
   unsigned int count = 0;
   int n = 0;
@@ -23,25 +35,23 @@ enum_windows(Display *dpy, Window win) {
 
   XFetchName(dpy, win, &name);
   if (name && strcmp("Gopher", name) == 0) {
-    return win;
+    notify_send(dpy, win, method, content, link);
   }
   if (name) XFree(name);
 
   if (XQueryTree(dpy, win, &win, &parent, &children, &count) == 0) {
     fprintf(stderr, "error: XQueryTree error\n");
-    return 0;
+    return;
   }
   for (n = 0; w == 0 && n < count; ++n) {
-    w = enum_windows(dpy, children[n]);
+    enum_windows(dpy, children[n], method, content, link);
   }
   XFree(children);
-  return w;
 }
 
 int
 main(int argc, char *const argv[]) {
   Display *dpy;
-  Window win;
   int result, r = 0;
   char* method = NULL;
   char* content = NULL;
@@ -72,21 +82,7 @@ main(int argc, char *const argv[]) {
     return 1;
   }
   gopherNotify = XInternAtom(dpy, "GopherNotify", 0);
-  win = enum_windows(dpy, DefaultRootWindow(dpy));
-  if (win == 0) {
-    fprintf(stderr, "gopher not found\n");
-    r = 1;
-  } else {
-    char* p;
-    json_t *object = json_object();
-    json_object_set(object, "method", json_string(method));
-    json_object_set(object, "content", json_string(content));
-    json_object_set(object, "link", json_string(link));
-    p = json_dumps(object, 0);
-    XChangeProperty(dpy, win, gopherNotify, XA_STRING, 8,
-        PropModeAppend, (unsigned char*) p, (int) strlen(p));
-    json_decref(object);
-  }
+  enum_windows(dpy, DefaultRootWindow(dpy), method, content, link);
   XCloseDisplay(dpy);
   return r;
 }
